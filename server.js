@@ -172,7 +172,7 @@ const ROUTING = {
   "12": CONTACTS.benjamin,
   "13": CONTACTS.benjamin,
   "15": CONTACTS.benjamin,
-  "20": CONTACTS.benjamin, // Corse 2A / 2B regroupée
+  "20": CONTACTS.benjamin,
   "26": CONTACTS.benjamin,
   "30": CONTACTS.benjamin,
   "34": CONTACTS.benjamin,
@@ -351,8 +351,6 @@ const DEPARTMENT_NAME_TO_CODE = {
   "val d'oise": "95",
   "val d oise": "95",
   "val-d'oise": "95",
-
-  // DROM / TOM usuels
   "guadeloupe": "971",
   "martinique": "972",
   "guyane": "973",
@@ -381,19 +379,32 @@ const DEPARTMENT_NAME_TO_CODE = {
   "nouvelle-calédonie": "988",
 };
 
+// Debug incoming requests
+app.use((req, res, next) => {
+  console.log("================================================");
+  console.log("INCOMING REQUEST");
+  console.log("METHOD:", req.method);
+  console.log("PATH:", req.path);
+  console.log("AUTH HEADER:", req.headers.authorization ? "present" : "missing");
+  next();
+});
+
 function checkAuth(req, res, next) {
   const header = req.headers.authorization || "";
 
   if (!header.startsWith("Bearer ")) {
+    console.log("AUTH FAIL: Missing bearer token");
     return res.status(401).json({ error: "Missing bearer token" });
   }
 
   const token = header.slice(7);
 
   if (token !== API_BEARER_TOKEN) {
+    console.log("AUTH FAIL: Invalid bearer token");
     return res.status(401).json({ error: "Invalid bearer token" });
   }
 
+  console.log("AUTH OK");
   next();
 }
 
@@ -520,7 +531,6 @@ function findDepartmentCodeByName(input) {
     return DEPARTMENT_NAME_TO_CODE[normalized];
   }
 
-  // petite tolérance si la phrase contient le nom du département
   for (const [name, code] of Object.entries(DEPARTMENT_NAME_TO_CODE)) {
     if (normalized === name || normalized.includes(name)) {
       return code;
@@ -536,34 +546,20 @@ function normalizeDepartmentInput(input) {
   const raw = String(input).trim().toUpperCase().replace(/#/g, "");
   const normalizedText = normalizeLooseText(input);
 
-  // Détection par nom
   const byName = findDepartmentCodeByName(normalizedText);
   if (byName) return byName;
 
-  // 2A / 2B explicites
-  if (
-    raw === "2A" || raw === "2 A" ||
-    raw === "2B" || raw === "2 B"
-  ) {
+  if (raw === "2A" || raw === "2 A" || raw === "2B" || raw === "2 B") {
     return raw.replace(/\s/g, "");
   }
 
   const alnum = raw.replace(/[^A-Z0-9]/g, "");
 
   if (alnum === "2A" || alnum === "2B") return alnum;
-
-  // code postal -> département
   if (/^\d{5}$/.test(alnum)) return alnum.slice(0, 2);
-
-  // codes à 3 chiffres (971, 972...)
   if (/^\d{3}$/.test(alnum)) return alnum;
-
-  // autres chaînes numériques plus longues
   if (/^\d{4,}$/.test(alnum)) return alnum.slice(0, 2);
-
-  // ex: "6" => "06"
   if (/^\d$/.test(alnum)) return "0" + alnum;
-
   if (/^\d{2}$/.test(alnum)) return alnum;
 
   return "";
@@ -582,7 +578,6 @@ function normalizeForRouting(normalizedDept) {
 function resolveTarget(rawDepartmentInput, attemptsRaw, callerType) {
   const attempts = parseAttempts(attemptsRaw);
 
-  // Règle métier prioritaire : particulier => ligne dédiée
   if (callerType === "particulier") {
     return {
       contact: CONTACTS.particuliers,
@@ -682,43 +677,47 @@ async function sendSectorEmail({
   callerType,
   requestObject,
 }) {
-  const transporter = getTransporter();
+  try {
+    const transporter = getTransporter();
 
-  if (!transporter) {
-    console.log("EMAIL NOT SENT: SMTP non configuré.");
-    return;
+    if (!transporter) {
+      console.log("EMAIL NOT SENT: SMTP non configuré.");
+      return;
+    }
+
+    const subject = `Nouvel appel - ${contact.name}`;
+
+    const lines = [
+      `Bonjour ${contact.name},`,
+      ``,
+      `Un appel client a été dirigé vers votre ligne.`,
+      ``,
+      `Source API : ${source || "non définie"}`,
+      `Type appelant : ${callerType || "Non renseigné"}`,
+      `Objet : ${requestObject || "Non renseigné"}`,
+      `Saisie département : ${departmentInput || "Non renseignée"}`,
+      `Département normalisé : ${normalizedDept || "Non renseigné"}`,
+      `Code de routage : ${routingCode || "Non renseigné"}`,
+      `Numéro appelant : ${callerNumber || "Non remonté"}`,
+      `Nom appelant : ${callerName || "Non remonté"}`,
+      `ID appel : ${callId || "Non remonté"}`,
+      `Numéro routé : ${contact.targetValue}`,
+      `Date : ${new Date().toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}`,
+      ``,
+      `Email automatique généré par l'API de routage Aircall.`,
+    ];
+
+    await transporter.sendMail({
+      from: MAIL_FROM,
+      to: contact.email,
+      subject,
+      text: lines.join("\n"),
+    });
+
+    console.log(`EMAIL SENT TO ${contact.email}`);
+  } catch (error) {
+    console.error("EMAIL SEND ERROR:", error?.message || error);
   }
-
-  const subject = `Nouvel appel - ${contact.name}`;
-
-  const lines = [
-    `Bonjour ${contact.name},`,
-    ``,
-    `Un appel client a été dirigé vers votre ligne.`,
-    ``,
-    `Source API : ${source || "non définie"}`,
-    `Type appelant : ${callerType || "Non renseigné"}`,
-    `Objet : ${requestObject || "Non renseigné"}`,
-    `Saisie département : ${departmentInput || "Non renseignée"}`,
-    `Département normalisé : ${normalizedDept || "Non renseigné"}`,
-    `Code de routage : ${routingCode || "Non renseigné"}`,
-    `Numéro appelant : ${callerNumber || "Non remonté"}`,
-    `Nom appelant : ${callerName || "Non remonté"}`,
-    `ID appel : ${callId || "Non remonté"}`,
-    `Numéro routé : ${contact.targetValue}`,
-    `Date : ${new Date().toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}`,
-    ``,
-    `Email automatique généré par l'API de routage Aircall.`,
-  ];
-
-  await transporter.sendMail({
-    from: MAIL_FROM,
-    to: contact.email,
-    subject,
-    text: lines.join("\n"),
-  });
-
-  console.log(`EMAIL SENT TO ${contact.email}`);
 }
 
 async function appendRoutingLogToSheet({
@@ -735,41 +734,58 @@ async function appendRoutingLogToSheet({
   callUuid,
   noteRaw,
 }) {
-  const sheets = getSheetsClient();
+  try {
+    const sheets = getSheetsClient();
 
-  if (!sheets) {
-    console.log("SHEETS NOT WRITTEN: configuration Google manquante.");
-    return;
+    if (!sheets) {
+      console.log("SHEETS NOT WRITTEN: configuration Google manquante.");
+      console.log({
+        hasSheetId: !!SHEET_ID,
+        hasServiceAccountEmail: !!GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        hasPrivateKey: !!GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
+      });
+      return;
+    }
+
+    const values = [[
+      new Date().toLocaleString("fr-FR", { timeZone: "Europe/Paris" }), // A
+      callerNumber || "", // B
+      departmentCode || "", // C
+      reason || "", // D
+      selected || "", // E
+      selectedEmail || "", // F
+      targetValue || "", // G
+      "en_cours", // H
+      0, // I
+      callerType || "", // J
+      requestObject || "", // K
+      sourceAgent || "", // L
+      callId || "", // M
+      callUuid || "", // N
+      noteRaw || "", // O
+    ]];
+
+    console.log("SHEETS APPEND VALUES =", JSON.stringify(values, null, 2));
+    console.log("SHEETS TARGET =", {
+      spreadsheetId: SHEET_ID,
+      range: `${SHEET_NAME}!A:O`,
+    });
+
+    const response = await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: `${SHEET_NAME}!A:O`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values },
+    });
+
+    console.log("GOOGLE SHEETS APPEND OK:", response.status);
+    console.log("GOOGLE SHEETS UPDATED RANGE:", response.data?.updates?.updatedRange);
+  } catch (error) {
+    console.error("GOOGLE SHEETS APPEND ERROR:");
+    console.error("MESSAGE:", error?.message || error);
+    console.error("DETAILS:", error?.response?.data || error);
   }
-
-  const values = [[
-    new Date().toLocaleString("fr-FR", { timeZone: "Europe/Paris" }), // A
-    callerNumber || "", // B
-    departmentCode || "", // C
-    reason || "", // D
-    selected || "", // E
-    selectedEmail || "", // F
-    targetValue || "", // G
-    "en_cours", // H
-    0, // I
-    callerType || "", // J
-    requestObject || "", // K
-    sourceAgent || "", // L
-    callId || "", // M
-    callUuid || "", // N
-    noteRaw || "", // O
-  ]];
-
-  const response = await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: `${SHEET_NAME}!A:O`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values },
-  });
-
-  console.log("GOOGLE SHEETS APPEND OK:", response.status);
-  console.log("GOOGLE SHEETS UPDATED RANGE:", response.data?.updates?.updatedRange);
 }
 
 async function postRoutingSideEffects({
@@ -810,63 +826,102 @@ async function postRoutingSideEffects({
 }
 
 app.post("/aircall/voice-standard-department", checkAuth, async (req, res) => {
-  console.log("=== VOICE STANDARD DEPARTMENT ===");
-  console.log(JSON.stringify(req.body, null, 2));
+  try {
+    console.log("=== VOICE STANDARD DEPARTMENT ===");
+    console.log("BODY =", JSON.stringify(req.body, null, 2));
 
-  const rawDepartmentInput =
-    req.body.departmentInput ??
-    req.body.departmentCode ??
-    req.body.postalCode ??
-    req.body.dept ??
-    req.body.answer ??
-    "";
+    const rawDepartmentInput =
+      req.body.departmentInput ??
+      req.body.departmentCode ??
+      req.body.postalCode ??
+      req.body.dept ??
+      req.body.answer ??
+      "";
 
-  const rawAttempts = req.body.attempts ?? 0;
-  const callerNumber = req.body.callerNumber ?? req.body.from ?? "";
-  const callerName =
-    req.body.callerName ??
-    req.body.name ??
-    req.body.caller_name ??
-    "";
+    const rawAttempts = req.body.attempts ?? 0;
+    const callerNumber = req.body.callerNumber ?? req.body.from ?? "";
+    const callerName =
+      req.body.callerName ??
+      req.body.name ??
+      req.body.caller_name ??
+      "";
 
-  const voiceData = extractVoiceAgentData(req.body);
-  const result = resolveTarget(rawDepartmentInput, rawAttempts, voiceData.callerType);
+    const voiceData = extractVoiceAgentData(req.body);
+    const result = resolveTarget(rawDepartmentInput, rawAttempts, voiceData.callerType);
 
-  console.log("departmentInput =", rawDepartmentInput);
-  console.log("callerType =", voiceData.callerType);
-  console.log("normalizedDept =", result.normalizedDept);
-  console.log("routingCode =", result.routingCode);
-  console.log("selected =", result.contact.name);
-  console.log("requestObject =", voiceData.requestObject);
+    const payload = {
+      routing: {
+        targetType: result.contact.targetType,
+        targetValue: result.contact.targetValue,
+      },
+      debug: {
+        rawDepartmentInput,
+        callerType: voiceData.callerType,
+        normalizedDept: result.normalizedDept,
+        routingCode: result.routingCode,
+        selected: result.contact.name,
+        reason: result.reason,
+        requestObject: voiceData.requestObject,
+      },
+    };
 
-  res.json({
-    routing: {
-      targetType: result.contact.targetType,
-      targetValue: result.contact.targetValue,
-    },
-    debug: {
-      callerType: voiceData.callerType,
-      normalizedDept: result.normalizedDept,
-      routingCode: result.routingCode,
-      selected: result.contact.name,
-      reason: result.reason,
-      requestObject: voiceData.requestObject,
-    },
-  });
+    console.log("ROUTING DEBUG =", JSON.stringify(payload.debug, null, 2));
+    console.log("ROUTING RESPONSE =", JSON.stringify(payload, null, 2));
 
-  postRoutingSideEffects({
-    result,
-    callerNumber,
-    callerName,
-    source: "voice-standard-department",
-    voiceData,
-  }).catch((e) => console.error("POST ROUTING ERROR:", e));
+    res.json(payload);
+
+    postRoutingSideEffects({
+      result,
+      callerNumber,
+      callerName,
+      source: "voice-standard-department",
+      voiceData,
+    }).catch((e) => console.error("POST ROUTING ERROR:", e));
+  } catch (error) {
+    console.error("ROUTE ERROR:", error?.message || error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 app.get("/health", (req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    service: "aircall-voice-standard",
+    hasSheetId: !!SHEET_ID,
+    hasServiceAccountEmail: !!GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    hasPrivateKey: !!GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
+    hasSmtpPass: !!SMTP_PASS,
+  });
+});
+
+app.get("/test-sheet", async (req, res) => {
+  try {
+    console.log("=== TEST SHEET START ===");
+
+    await appendRoutingLogToSheet({
+      callerNumber: "+33600000000",
+      departmentCode: "97",
+      reason: "TEST",
+      selected: "Sébastien",
+      selectedEmail: "sebastien@rubiomonocoat.fr",
+      targetValue: "+33621414949",
+      callerType: "professionnel",
+      requestObject: "test ecriture sheet",
+      sourceAgent: "manual-test",
+      callId: "test-call-id",
+      callUuid: "test-call-uuid",
+      noteRaw: "test",
+    });
+
+    console.log("=== TEST SHEET END ===");
+
+    res.json({ ok: true, message: "Test Google Sheets exécuté" });
+  } catch (error) {
+    console.error("TEST SHEET ERROR:", error?.message || error);
+    res.status(500).json({ ok: false, error: error?.message || "Unknown error" });
+  }
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("API running on port " + PORT);
+  console.log(`API running on port ${PORT}`);
 });
